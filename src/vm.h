@@ -27,7 +27,7 @@ extern "C" {
 
 //================================================================
 /*!@brief
-  IREP Internal REPresentation
+  Internal REPresentation
 */
 typedef struct IREP {
   uint16_t ref_count;		//!< reference counter
@@ -70,7 +70,6 @@ typedef struct VM {
   mrbc_irep *irep;
 
   uint8_t        vm_id; // vm_id : 1..n
-  const uint8_t *mrb;   // bytecode
 
   mrbc_irep *pc_irep;    // PC
   uint16_t  pc;         // PC

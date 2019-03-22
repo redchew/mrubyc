@@ -3,8 +3,8 @@
   mruby bytecode loader.
 
   <pre>
-  Copyright (C) 2015-2017 Kyushu Institute of Technology.
-  Copyright (C) 2015-2017 Shimane IT Open-Innovation Center.
+  Copyright (C) 2015-2018 Kyushu Institute of Technology.
+  Copyright (C) 2015-2018 Shimane IT Open-Innovation Center.
 
   This file is distributed under BSD 3-Clause License.
 
@@ -19,18 +19,15 @@
 
 #include "vm.h"
 #include "load.h"
-#include "errorcode.h"
 #include "value.h"
 #include "alloc.h"
 
 
 //================================================================
-/*!@brief
-  Parse header section.
+/*! Parse header section.
 
-  @param  vm    A pointer of VM.
-  @param  pos	A pointer of pointer of RITE header.
-  @return int	zero if no error.
+  @param  mrbbuf	pointer to mrb file buffer.
+  @return int		header size.
 
   <pre>
   Structure
@@ -42,41 +39,33 @@
    "0000"	compiler version
   </pre>
 */
-static int load_header(struct VM *vm, const uint8_t **pos)
+static int check_file_header(const uint8_t *mrbbuf)
 {
-  const uint8_t *p = *pos;
+  static const char RITE0004[8] = "RITE0004";
+  static const char MATZ[4] = "MATZ";
+  static const char A0000[4] = "0000";
 
-  if( memcmp(p, "RITE0004", 8) != 0 ) {
-    vm->error_code = LOAD_FILE_HEADER_ERROR_VERSION;
-    return -1;
-  }
+  if( memcmp(mrbbuf, RITE0004, sizeof(RITE0004)) != 0 ) return -1;
 
   /* Ignore CRC */
 
-  /* Ignore size */
+  int size = bin_to_uint32(mrbbuf + 10);
 
-  if( memcmp(p + 14, "MATZ", 4) != 0 ) {
-    vm->error_code = LOAD_FILE_HEADER_ERROR_MATZ;
-    return -1;
-  }
-  if( memcmp(p + 18, "0000", 4) != 0 ) {
-    vm->error_code = LOAD_FILE_HEADER_ERROR_VERSION;
-    return -1;
-  }
+  if( memcmp(mrbbuf + 14, MATZ, sizeof(MATZ)) != 0 ) return -1;
+  if( memcmp(mrbbuf + 18, A0000, sizeof(A0000)) != 0 ) return -1;
 
-  *pos += 22;
-  return 0;
+  return size;
 }
 
 
-
 //================================================================
-/*!@brief
-  read one irep section.
+/*! Load irep one segment (ISEQ, POOL and SYMS).
 
-  @param  vm    A pointer of VM.
-  @param  pos	A pointer of pointer of IREP section.
-  @return       Pointer of allocated mrbc_irep or NULL
+  @param  pp_irep	return variable of allocated mrbc_irep.
+  @param  mrbbuf	pointer to mrb file buffer.
+  @param  idx		start index of mrbbuf.
+
+  @return int		parse end index. negative value is error.
 
   <pre>
    (loop n of child irep bellow)
@@ -100,16 +89,13 @@ static int load_header(struct VM *vm, const uint8_t **pos)
      ...	symbol data
   </pre>
 */
-static mrbc_irep * load_irep_1(struct VM *vm, const uint8_t **pos)
+static int load_irep_1(mrbc_irep **pp_irep, const uint8_t *mrbbuf, int idx)
 {
-  const uint8_t *p = *pos + 4;			// skip record size
+  const uint8_t *p = mrbbuf + idx + 4;		// 4 = skip record size
 
   // new irep
   mrbc_irep *irep = mrbc_irep_alloc(0);
-  if( irep == NULL ) {
-    vm->error_code = LOAD_FILE_IREP_ERROR_ALLOCATION;
-    return NULL;
-  }
+  if( irep == NULL ) return -E_NOMEMORY_ERROR;
 
   // nlocals,nregs,rlen
   irep->nlocals = bin_to_uint16(p);	p += 2;
@@ -118,15 +104,12 @@ static mrbc_irep * load_irep_1(struct VM *vm, const uint8_t **pos)
   irep->ilen = bin_to_uint32(p);	p += 4;
 
   // padding
-  p += (vm->mrb - p) & 0x03;
+  p += (mrbbuf - p) & 0x03;
 
   // allocate memory for child irep's pointers
   if( irep->rlen ) {
     irep->reps = (mrbc_irep **)mrbc_alloc(0, sizeof(mrbc_irep *) * irep->rlen);
-    if( irep->reps == NULL ) {
-      vm->error_code = LOAD_FILE_IREP_ERROR_ALLOCATION;
-      return NULL;
-    }
+    if( irep->reps == NULL ) return -E_NOMEMORY_ERROR;
   }
 
   // ISEQ (code) BLOCK
@@ -137,10 +120,7 @@ static mrbc_irep * load_irep_1(struct VM *vm, const uint8_t **pos)
   irep->plen = bin_to_uint32(p);	p += 4;
   if( irep->plen ) {
     irep->pools = (mrbc_object**)mrbc_alloc(0, sizeof(void*) * irep->plen);
-    if(irep->pools == NULL ) {
-      vm->error_code = LOAD_FILE_IREP_ERROR_ALLOCATION;
-      return NULL;
-    }
+    if( irep->pools == NULL ) return -E_NOMEMORY_ERROR;
   }
 
   int i;
@@ -148,10 +128,8 @@ static mrbc_irep * load_irep_1(struct VM *vm, const uint8_t **pos)
     int tt = *p++;
     int obj_size = bin_to_uint16(p);	p += 2;
     mrbc_object *obj = mrbc_alloc(0, sizeof(mrbc_object));
-    if( obj == NULL ) {
-      vm->error_code = LOAD_FILE_IREP_ERROR_ALLOCATION;
-      return NULL;
-    }
+    if( obj == NULL ) return -E_NOMEMORY_ERROR;
+
     switch( tt ) {
 #if MRBC_USE_STRING
     case 0: { // IREP_TT_STRING
@@ -191,42 +169,43 @@ static mrbc_irep * load_irep_1(struct VM *vm, const uint8_t **pos)
     p += s+1;
   }
 
-  *pos = p;
-  return irep;
+  *pp_irep = irep;
+  return p - mrbbuf;
 }
 
 
-
 //================================================================
-/*!@brief
-  read all irep section.
+/*! Load all IREP section.
 
-  @param  vm    A pointer of VM.
-  @param  pos	A pointer of pointer of IREP section.
-  @return       Pointer of allocated mrbc_irep or NULL
+  @param  pp_irep	return variable of allocated mrbc_irep.
+  @param  mrbbuf	pointer to mrb file buffer.
+  @param  idx		start index of mrbbuf.
+
+  @return int		parse end index. negative value is error.
 */
-static mrbc_irep * load_irep_0(struct VM *vm, const uint8_t **pos)
+static int load_irep_0(mrbc_irep **pp_irep, const uint8_t *mrbbuf, int idx)
 {
-  mrbc_irep *irep = load_irep_1(vm, pos);
-  if( !irep ) return NULL;
+  idx = load_irep_1(pp_irep, mrbbuf, idx);
+  if( idx < 0 ) return idx;
 
   int i;
-  for( i = 0; i < irep->rlen; i++ ) {
-    irep->reps[i] = load_irep_0(vm, pos);
+  for( i = 0; i < (*pp_irep)->rlen; i++ ) {
+    idx = load_irep_0( &((*pp_irep)->reps[i]), mrbbuf, idx );
+    if( idx < 0 ) return idx;
   }
 
-  return irep;
+  return idx;
 }
 
 
-
 //================================================================
-/*!@brief
-  Parse IREP section.
+/*! Parse IREP section and load.
 
-  @param  vm    A pointer of VM.
-  @param  pos	A pointer of pointer of IREP section.
-  @return int	zero if no error.
+  @param  pp_irep	return variable of allocated mrbc_irep.
+  @param  mrbbuf	pointer to mrb file buffer.
+  @param  idx		start index of mrbbuf.
+
+  @return int		0 is no error. negative value is error.
 
   <pre>
   Structure
@@ -235,71 +214,81 @@ static mrbc_irep * load_irep_0(struct VM *vm, const uint8_t **pos)
    "0000"	rite version
   </pre>
 */
-static int load_irep(struct VM *vm, const uint8_t **pos)
+static int load_irep(mrbc_irep **pp_irep, const uint8_t *mrbbuf, int idx)
 {
-  const uint8_t *p = *pos + 4;			// 4 = skip "RITE"
-  int section_size = bin_to_uint32(p);
-  p += 4;
-  if( memcmp(p, "0000", 4) != 0 ) {		// rite version
-    vm->error_code = LOAD_FILE_IREP_ERROR_VERSION;
-    return -1;
-  }
-  p += 4;
-  vm->irep = load_irep_0(vm, &p);
-  if( vm->irep == NULL ) {
-    return -1;
-  }
+  static const char A0000[4] = "0000";	// RITE version
 
-  *pos += section_size;
-  return 0;
-}
+  const uint8_t *p = mrbbuf + idx;
+  if( memcmp(p + 8, A0000, sizeof(A0000)) != 0 ) return -E_TYPE_ERROR;
 
-
-
-//================================================================
-/*!@brief
-  Parse LVAR section.
-
-  @param  vm    A pointer of VM.
-  @param  pos	A pointer of pointer of LVAR section.
-  @return int	zero if no error.
-*/
-static int load_lvar(struct VM *vm, const uint8_t **pos)
-{
-  const uint8_t *p = *pos;
-
-  /* size */
-  *pos += bin_to_uint32(p+4);
+  int ret = load_irep_0(pp_irep, mrbbuf, idx + 12);
+  if( ret < 0 ) return ret;
 
   return 0;
 }
 
 
 //================================================================
-/*!@brief
-  Load the VM bytecode.
+/*! Parse mrb file.
 
-  @param  vm    Pointer to VM.
-  @param  ptr	Pointer to bytecode.
+  @param  pp_irep	return variable of allocated mrbc_irep.
+  @param  mrbbuf	pointer to mrb file buffer.
+  @return int		error code.
+*/
+int mrbc_parse_mrb(struct IREP **pp_irep, const uint8_t *mrbbuf)
+{
+  static const char IREP[4] = "IREP";
+  static const char END[4]  = "END";
+
+  mrbc_irep *irep = NULL;
+
+  int size = check_file_header(mrbbuf);
+  if( size < 0 ) return E_TYPE_ERROR;
+  int idx = 22;		// 22: size of file header.
+
+  while( 1 ) {
+    const uint8_t *p = mrbbuf + idx;
+    if( memcmp(p, END, sizeof(END)) == 0 ) break;
+
+    if( memcmp(p, IREP, sizeof(IREP)) == 0 ) {
+      int ret = load_irep(&irep, mrbbuf, idx);
+      if( ret < 0 ) return -ret;	// error return.
+    }
+
+    idx += bin_to_uint32(p + 4);	// next section.
+  }
+
+  if( pp_irep != NULL ) *pp_irep = irep;
+
+  return 0;
+}
+
+
+//================================================================
+/*! attach irep to vm
+
+  @param  vm	Pointer to VM.
+  @param  irep	Pointer to IREP.
 
 */
-int mrbc_load_mrb(struct VM *vm, const uint8_t *ptr)
+void mrbc_attach_irep(struct VM *vm, struct IREP *irep )
 {
-  int ret = -1;
-  vm->mrb = ptr;
+  vm->irep = irep;
+}
 
-  ret = load_header(vm, &ptr);
-  while( ret == 0 ) {
-    if( memcmp(ptr, "IREP", 4) == 0 ) {
-      ret = load_irep(vm, &ptr);
-    }
-    else if( memcmp(ptr, "LVAR", 4) == 0 ) {
-      ret = load_lvar(vm, &ptr);
-    }
-    else if( memcmp(ptr, "END\0", 4) == 0 ) {
-      break;
-    }
-  }
+
+//================================================================
+/*! Load the VM bytecode.
+
+  @param  vm		Pointer to VM.
+  @param  mrbbuf	Pointer to bytecode.
+
+*/
+int mrbc_load_mrb(struct VM *vm, const uint8_t *mrbbuf)
+{
+  mrbc_irep *irep = NULL;
+  int ret = mrbc_parse_mrb(&irep, mrbbuf);
+  if( ret == 0 ) mrbc_attach_irep( vm, irep );
 
   return ret;
 }
