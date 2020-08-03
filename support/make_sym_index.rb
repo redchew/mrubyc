@@ -131,8 +131,8 @@ all_symbols.each {|s|
 puts "static const struct SYM_INDEX builtin_sym_index[] = {"
 sym_index.each {|index|
   printf "  {0x%04x,", index[:hash]
-  printf " 0x%02x", index[:left]
-  printf " 0x%02x", index[:right]
+  printf " 0x%02x,", index[:left]
+  printf " 0x%02x,", index[:right]
   printf " \"%s\"},\n", index[:cstr]
 }
 puts "};"
