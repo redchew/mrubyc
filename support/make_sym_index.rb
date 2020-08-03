@@ -33,56 +33,102 @@ end
 
 
 ##
-# Add index table
+# make tree index.
 #
-def add_index( sym_index, str )
-  hash = calc_hash(str)
+def make_tree( sym_index, i = 0 )
+  node_right = sym_index.pop( sym_index.size / 2 )
+  node = sym_index.pop
+  node_left = sym_index
 
-  # check collision
-  sym_index.each {|index|
-    if hash == index[:hash]
-      STDERR.puts "Hash collision detected."
-      exit
-    end
-  }
-
-  index = { :hash=>hash, :left=>0, :right=>0, :cstr=>str }
-
-  # walk tree and add this.
-  if !sym_index.empty?
-    i = 0
-    while true
-      if hash < sym_index[i][:hash]
-        # left side
-        if sym_index[i][:left] == 0       # left is empty?
-          sym_index[i][:left] = sym_index.size
-          break
-        end
-        i = sym_index[i][:left]
-      else
-        # right side
-        if sym_index[i][:right] == 0      # right is empty?
-          sym_index[i][:right] = sym_index.size
-          break
-        end
-        i = sym_index[i][:right]
-      end
-    end
+  # left side
+  case node_left.size
+  when 0
+    # nothing to do
+  when 1
+    node[:left] = (i += 1)
+  else
+    node[:left] = i + 1
+    node_left = make_tree( node_left, i + 1 )
+    i += node_left.size
   end
 
-  sym_index << index
+  # right side
+  case node_right.size
+  when 0
+    # nothing to do
+  when 1
+    node[:right] = (i += 1)
+  else
+    node[:right] = i + 1
+    node_right = make_tree( node_right, i + 1 )
+    i += node_right.size
+  end
+
+  return [node] + node_left + node_right
 end
+
+
+##
+# search index
+#
+def search_index( sym_index, str )
+  hash = calc_hash( str )
+
+  i = 0
+  nest = 0
+  while true
+    nest += 1
+    if (sym_index[i][:hash] == hash) && (str == sym_index[i][:cstr])
+      return i, nest
+    end
+
+    if hash < sym_index[i][:hash]
+      i = sym_index[i][:left]
+    else
+      i = sym_index[i][:right]
+    end
+
+    break if i == 0
+  end
+
+  return -1;
+end
+
 
 
 ##
 # main
 #
 sym_index = []
-all_symbols.each {|sym|
-  add_index( sym_index, sym.to_s )
+
+all_symbols.each {|s|
+  sym_index << {:hash=>calc_hash(s.to_s), :left=>0, :right=>0, :cstr=>s.to_s}
+}
+sym_index.sort_by! {|index| index[:hash] }
+
+# check collision.
+i = 1
+while i < sym_index.size
+  if sym_index[i-1][:hash] == sym_index[i][:hash]
+    STDERR.puts "Hash collision detected. #{sym_index[i-1][:cstr].inspect} and #{sym_index[i][:cstr].inspect}"
+    exit 1
+  end
+  i += 1
+end
+
+sym_index = make_tree( sym_index )
+
+# check search success.
+all_symbols.each {|s|
+  i,n = search_index( sym_index, s.to_s )
+  if i < 0
+    STDERR.puts "Can't find #{s.inspect}"
+    exit 1
+  end
+#  p [s,i,n]
 }
 
-puts "static const struct SYM_INDEX base_index[] = {"
+puts "static const struct SYM_INDEX builtin_sym_index[] = {"
 sym_index.each {|index|
   printf "  {0x%04x,", index[:hash]
   printf " 0x%02x", index[:left]
